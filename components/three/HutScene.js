@@ -4,13 +4,14 @@ import { Canvas } from "@react-three/fiber";
 import { Environment, ContactShadows } from "@react-three/drei";
 import HutModel from "./HutModel";
 import Forest from "./Forest";
-import { useEffect, useRef, useState, Suspense } from "react";
+import { useEffect, useRef, useState, Suspense, useCallback } from "react";
 import * as THREE from "three";
 import { useFrame, useThree } from "@react-three/fiber";
 
-function SceneController() {
+function SceneController({ dragDelta }) {
   const { camera } = useThree();
   const scrollProgress = useRef(0);
+  const smoothDrag = useRef({ x: 0, y: 0 });
 
   useEffect(() => {
     const handleScroll = () => {
@@ -20,7 +21,6 @@ function SceneController() {
     };
     
     window.addEventListener("scroll", handleScroll, { passive: true });
-    // Run once to initialize
     handleScroll();
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
@@ -28,46 +28,47 @@ function SceneController() {
   useFrame((state) => {
     const p = scrollProgress.current;
 
+    // Smooth drag delta with easing
+    smoothDrag.current.x = THREE.MathUtils.lerp(smoothDrag.current.x, dragDelta.current.x, 0.06);
+    smoothDrag.current.y = THREE.MathUtils.lerp(smoothDrag.current.y, dragDelta.current.y, 0.06);
+
     // Multi-stage camera flight path
     let targetX = 0;
     let targetY = 0.8;
     let targetZ = 6.2;
 
     if (p < 0.2) {
-      // Stage 1: Zoom slightly, move left to outline wood/metal pillars (0.0 to 0.2)
       const t = p / 0.2;
       targetX = THREE.MathUtils.lerp(0, -1.8, t);
       targetY = THREE.MathUtils.lerp(0.8, 1.4, t);
       targetZ = THREE.MathUtils.lerp(6.2, 5.6, t);
     } else if (p < 0.45) {
-      // Stage 2: Descend, rotate to side deck/jacuzzi pool perspective (0.2 to 0.45)
       const t = (p - 0.2) / 0.25;
       targetX = THREE.MathUtils.lerp(-1.8, 2.5, t);
       targetY = THREE.MathUtils.lerp(1.4, 0.4, t);
       targetZ = THREE.MathUtils.lerp(5.6, 4.6, t);
     } else if (p < 0.75) {
-      // Stage 3: Dynamic high-angle cinematic crane view showing foggy trees (0.45 to 0.75)
       const t = (p - 0.45) / 0.3;
       targetX = THREE.MathUtils.lerp(2.5, 0, t);
       targetY = THREE.MathUtils.lerp(0.4, 3.6, t);
       targetZ = THREE.MathUtils.lerp(4.6, 6.6, t);
     } else {
-      // Stage 4: Close up, dramatic floor-level perspective looking up (0.75 to 1.0)
       const t = (p - 0.75) / 0.25;
       targetX = THREE.MathUtils.lerp(0, -1.0, t);
       targetY = THREE.MathUtils.lerp(3.6, -0.2, t);
       targetZ = THREE.MathUtils.lerp(6.6, 4.8, t);
     }
 
-    // Dynamic mouse parallax vectors
-    const mouseX = state.pointer.x * 0.5;
-    const mouseY = state.pointer.y * 0.35;
+    // Enhanced mouse parallax + drag offset
+    const mouseX = state.pointer.x * 0.65;
+    const mouseY = state.pointer.y * 0.45;
+    const dragX = smoothDrag.current.x * 2.8;
+    const dragY = smoothDrag.current.y * 1.6;
 
-    camera.position.x = THREE.MathUtils.lerp(camera.position.x, targetX + mouseX, 0.04);
-    camera.position.y = THREE.MathUtils.lerp(camera.position.y, targetY + mouseY, 0.04);
-    camera.position.z = THREE.MathUtils.lerp(camera.position.z, targetZ, 0.04);
+    camera.position.x = THREE.MathUtils.lerp(camera.position.x, targetX + mouseX + dragX, 0.05);
+    camera.position.y = THREE.MathUtils.lerp(camera.position.y, targetY + mouseY - dragY, 0.05);
+    camera.position.z = THREE.MathUtils.lerp(camera.position.z, targetZ, 0.05);
 
-    // Frame the center point beautifully with dynamic scroll offsets
     const lookX = THREE.MathUtils.lerp(0, -0.3, p);
     const lookY = THREE.MathUtils.lerp(0, 0.25, p);
     camera.lookAt(new THREE.Vector3(lookX, lookY, 0));
@@ -78,10 +79,49 @@ function SceneController() {
 
 export default function HutScene() {
   const [mounted, setMounted] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragDelta = useRef({ x: 0, y: 0 });
+  const lastPointer = useRef({ x: 0, y: 0 });
+  const decayTimer = useRef(null);
 
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  // Decay drag delta back to zero when mouse stops
+  const startDecay = useCallback(() => {
+    if (decayTimer.current) clearInterval(decayTimer.current);
+    decayTimer.current = setInterval(() => {
+      dragDelta.current.x *= 0.88;
+      dragDelta.current.y *= 0.88;
+      if (Math.abs(dragDelta.current.x) < 0.0005 && Math.abs(dragDelta.current.y) < 0.0005) {
+        dragDelta.current = { x: 0, y: 0 };
+        clearInterval(decayTimer.current);
+      }
+    }, 16);
+  }, []);
+
+  const handlePointerDown = useCallback((e) => {
+    // Only start drag on left-click, not on pin elements
+    if (e.button !== 0) return;
+    setIsDragging(true);
+    lastPointer.current = { x: e.clientX, y: e.clientY };
+    if (decayTimer.current) clearInterval(decayTimer.current);
+  }, []);
+
+  const handlePointerMove = useCallback((e) => {
+    if (!isDragging) return;
+    const dx = (e.clientX - lastPointer.current.x) / window.innerWidth;
+    const dy = (e.clientY - lastPointer.current.y) / window.innerHeight;
+    dragDelta.current.x += dx * 3.5;
+    dragDelta.current.y += dy * 3.5;
+    lastPointer.current = { x: e.clientX, y: e.clientY };
+  }, [isDragging]);
+
+  const handlePointerUp = useCallback(() => {
+    setIsDragging(false);
+    startDecay();
+  }, [startDecay]);
 
   if (!mounted) {
     return (
@@ -94,12 +134,22 @@ export default function HutScene() {
   }
 
   return (
-    <div className="w-screen h-screen fixed inset-0 -z-10 pointer-events-none">
+    <div
+      className="w-screen h-screen fixed inset-0 -z-10"
+      style={{ cursor: isDragging ? "grabbing" : "grab" }}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerLeave={handlePointerUp}
+    >
       <Canvas
         shadows
         camera={{ position: [0, 0.8, 6.2], fov: 45 }}
         gl={{ antialias: true, alpha: true, powerPreference: "high-performance" }}
         className="w-full h-full"
+        // Allow HTML overlays (pins) to receive pointer events
+        eventSource={typeof document !== 'undefined' ? document.body : undefined}
+        eventPrefix="client"
       >
         <Suspense fallback={null}>
           {/* Ambient Dark Forest Background Atmosphere */}
@@ -137,10 +187,23 @@ export default function HutScene() {
           {/* Reflections on Glass and Metals */}
           <Environment preset="forest" />
 
-          {/* Camera controller coordinating transitions with page scroll */}
-          <SceneController />
+          {/* Camera controller coordinating transitions with page scroll + drag */}
+          <SceneController dragDelta={dragDelta} />
         </Suspense>
       </Canvas>
+
+      {/* Drag hint — fades in on first load, disappears after interaction */}
+      {!isDragging && (
+        <div
+          className="pointer-events-none absolute bottom-24 right-8 flex items-center gap-2 opacity-40 animate-pulse"
+          style={{ zIndex: 5 }}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#efeae2" strokeWidth="1.5">
+            <path d="M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M12 12v.01" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          <span className="font-space text-[9px] tracking-[0.3em] uppercase text-[#efeae2]">Drag to explore</span>
+        </div>
+      )}
     </div>
   );
 }
